@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 type Scenario = "loan" | "savings" | "withdrawal" | "registration" | "faq";
 
@@ -58,15 +58,14 @@ export default function Home() {
   const [typing, setTyping] = useState(false);
   const [showMath, setShowMath] = useState(false);
   const [applicationStarted, setApplicationStarted] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const suggestedScenario = useMemo<Scenario>(() => {
-    const value = input.toLowerCase();
-    if (value.includes("withdraw")) return "withdrawal";
-    if (value.includes("register") || value.includes("join")) return "registration";
-    if (value.includes("saving") || value.includes("balance")) return "savings";
-    if (value.includes("share") || value.includes("faq")) return "faq";
-    return "loan";
-  }, [input]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, [messages, typing]);
 
   function runScenario(id: Scenario, customPrompt?: string) {
     const scenario = scenarioCopy[id];
@@ -86,10 +85,67 @@ export default function Home() {
     }, 650);
   }
 
+  async function askClaude(prompt: string) {
+    if (!prompt.trim() || typing) return;
+
+    setApplicationStarted(false);
+    setInput("");
+    setTyping(true);
+
+    setMessages((current) => [
+      ...current,
+      {
+        role: "member",
+        text: prompt.trim(),
+      },
+    ]);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: prompt.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "The assistant could not respond.");
+      }
+
+      setMessages((current) => [
+        ...current,
+        {
+          role: "agent",
+          text: data.answer,
+        },
+      ]);
+    } catch (error) {
+      console.error("Chat request failed:", error);
+
+      setMessages((current) => [
+        ...current,
+        {
+          role: "agent",
+          text:
+            "I’m sorry, but I could not reach the LMCS assistant. Please try again.",
+        },
+      ]);
+    } finally {
+      setTyping(false);
+    }
+  }
+
   function submitMessage(event: FormEvent) {
     event.preventDefault();
+
     if (!input.trim() || typing) return;
-    runScenario(suggestedScenario, input.trim());
+
+    void askClaude(input);
   }
 
   return (
@@ -156,7 +212,7 @@ export default function Home() {
                 <span className="online-dot" />
                 <strong>LMCS Assistant</strong>
               </div>
-              <span>Rules-based demonstration</span>
+              <span>Claude + approved LMCS FAQ</span>
             </div>
 
             <div className="messages" aria-live="polite">
@@ -222,6 +278,7 @@ export default function Home() {
                   <div className="typing" aria-label="Assistant is responding"><i /><i /><i /></div>
                 </div>
               )}
+              <div ref={messagesEndRef} aria-hidden="true" />
             </div>
 
             <form className="composer" onSubmit={submitMessage}>
