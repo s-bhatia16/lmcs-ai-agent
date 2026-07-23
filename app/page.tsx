@@ -8,6 +8,7 @@ type Message = {
   role: "member" | "agent";
   text: string;
   result?: "loan" | "savings" | "withdrawal" | "registration";
+  kind?: "scripted" | "claude";
 };
 
 const scenarioCopy: Record<Scenario, { prompt: string; reply: string; result?: Message["result"] }> = {
@@ -49,10 +50,101 @@ const quickActions: { id: Scenario; label: string; icon: string }[] = [
   { id: "registration", label: "Register a new member", icon: "+" },
 ];
 
+type MessageBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "list"; items: string[] }
+  | { type: "source"; text: string };
+
+function formatAgentMessage(text: string): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let listItems: string[] = [];
+
+  function flushList() {
+    if (listItems.length > 0) {
+      blocks.push({ type: "list", items: listItems });
+      listItems = [];
+    }
+  }
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim().replace(/^✓\s*/, "");
+
+    if (!line) {
+      flushList();
+      continue;
+    }
+
+    if (line.toLowerCase().startsWith("bullet:")) {
+      listItems.push(line.slice(line.indexOf(":") + 1).trim());
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      listItems.push(line.slice(2).trim());
+      continue;
+    }
+
+    flushList();
+
+    if (line.toLowerCase().startsWith("answer:")) {
+      blocks.push({
+        type: "paragraph",
+        text: line.slice(line.indexOf(":") + 1).trim(),
+      });
+    } else if (line.toLowerCase().startsWith("source:")) {
+      blocks.push({
+        type: "source",
+        text: line.slice(line.indexOf(":") + 1).trim(),
+      });
+    } else {
+      blocks.push({ type: "paragraph", text: line });
+    }
+  }
+
+  flushList();
+  return blocks;
+}
+
+function AgentMessage({ text }: { text: string }) {
+  const blocks = formatAgentMessage(text);
+
+  return (
+    <div className="formatted-message">
+      {blocks.map((block, index) => {
+        if (block.type === "list") {
+          return (
+            <ul key={`list-${index}`}>
+              {block.items.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        if (block.type === "source") {
+          return (
+            <div className="source-badge" key={`source-${index}`}>
+              <span aria-hidden="true">✓</span>
+              Source: {block.text}
+            </div>
+          );
+        }
+
+        return <p key={`paragraph-${index}`}>{block.text}</p>;
+      })}
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
-    { role: "member", text: scenarioCopy.loan.prompt },
-    { role: "agent", text: scenarioCopy.loan.reply, result: "loan" },
+    { role: "member", text: scenarioCopy.loan.prompt, kind: "scripted" },
+    {
+      role: "agent",
+      text: scenarioCopy.loan.reply,
+      result: "loan",
+      kind: "scripted",
+    },
   ]);
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
@@ -72,14 +164,23 @@ export default function Home() {
     setApplicationStarted(false);
     setMessages((current) => [
       ...current,
-      { role: "member", text: customPrompt || scenario.prompt },
+      {
+        role: "member",
+        text: customPrompt || scenario.prompt,
+        kind: "scripted",
+      },
     ]);
     setInput("");
     setTyping(true);
     window.setTimeout(() => {
       setMessages((current) => [
         ...current,
-        { role: "agent", text: scenario.reply, result: scenario.result },
+        {
+          role: "agent",
+          text: scenario.reply,
+          result: scenario.result,
+          kind: "scripted",
+        },
       ]);
       setTyping(false);
     }, 650);
@@ -87,6 +188,14 @@ export default function Home() {
 
   async function askClaude(prompt: string) {
     if (!prompt.trim() || typing) return;
+
+    const history = messages
+      .filter((message) => message.kind === "claude")
+      .slice(-8)
+      .map((message) => ({
+        role: message.role === "member" ? "user" : "assistant",
+        content: message.text,
+      }));
 
     setApplicationStarted(false);
     setInput("");
@@ -97,6 +206,7 @@ export default function Home() {
       {
         role: "member",
         text: prompt.trim(),
+        kind: "claude",
       },
     ]);
 
@@ -108,6 +218,8 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: prompt.trim(),
+          memberId: "LMCS-1042",
+          history,
         }),
       });
 
@@ -122,6 +234,7 @@ export default function Home() {
         {
           role: "agent",
           text: data.answer,
+          kind: "claude",
         },
       ]);
     } catch (error) {
@@ -133,6 +246,7 @@ export default function Home() {
           role: "agent",
           text:
             "I’m sorry, but I could not reach the LMCS assistant. Please try again.",
+          kind: "claude",
         },
       ]);
     } finally {
@@ -220,7 +334,19 @@ export default function Home() {
                 <div className={`message-row ${message.role}`} key={`${message.text}-${index}`}>
                   {message.role === "agent" && <div className="agent-avatar">LM</div>}
                   <div className="message-stack">
-                    <div className="bubble">{message.text}</div>
+                    <div
+                      className={`bubble ${
+                        message.role === "agent"
+                          ? "agent-bubble"
+                          : "member-bubble"
+                      }`}
+                    >
+                      {message.role === "agent" ? (
+                        <AgentMessage text={message.text} />
+                      ) : (
+                        message.text
+                      )}
+                    </div>
                     {message.result === "loan" && (
                       <div className="result-card">
                         <div className="result-grid">
